@@ -1,0 +1,9 @@
+{
+  "appId": "com.bufoods.app",
+  "appName": "Delibup",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}
