@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import logod from '../assets/logod.png';
 import { MdMailOutline, MdLockOpen } from 'react-icons/md';
 import { FiEye, FiEyeOff } from 'react-icons/fi';
-import { auth } from '../api';
+import { auth, warmup } from '../api';
 import { setToken, setRefreshToken, setUser, getToken, getUser } from '../utils/tokenUtils';
 
 const LoginPage = () => {
@@ -13,6 +13,8 @@ const LoginPage = () => {
     const [passwordError, setPasswordError] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [loadingMessage, setLoadingMessage] = useState('Signing in...');
+    const wakeTimerRef = React.useRef(null);
     const [showPassword, setShowPassword] = useState(false);
     const [rememberMe, setRememberMe] = useState(false);
     const navigate = useNavigate();
@@ -30,10 +32,24 @@ const LoginPage = () => {
         }
     }, [navigate]);
 
+    // Non-blocking warmup ping on mount to help wake sleeping servers
+    React.useEffect(() => {
+        warmup();
+    }, []);
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
         setLoading(true);
+        setLoadingMessage('Signing in...');
+
+        // If the request takes too long, inform the user the server may be waking up
+        if (wakeTimerRef.current) {
+            clearTimeout(wakeTimerRef.current);
+        }
+        wakeTimerRef.current = setTimeout(() => {
+            setLoadingMessage('Waking server... This first login can take up to a minute.');
+        }, 4000);
 
         // Validate password length
         if (password.length < 8) {
@@ -82,12 +98,34 @@ const LoginPage = () => {
                 setError(err.message || 'An error occurred during login');
             }
         } finally {
+            if (wakeTimerRef.current) {
+                clearTimeout(wakeTimerRef.current);
+                wakeTimerRef.current = null;
+            }
             setLoading(false);
+            setLoadingMessage('Signing in...');
         }
     };
 
     return (
         <div style={styles.pageContainer}>
+            {/* Loading overlay and keyframes definition */}
+            <style>
+                {`
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                `}
+            </style>
+            {loading && (
+                <div style={styles.loadingOverlay}>
+                    <div style={styles.loadingBox}>
+                        <div style={styles.spinner} />
+                        <div style={styles.loadingText}>{loadingMessage}</div>
+                    </div>
+                </div>
+            )}
             <div style={styles.container}>
                 <img src={logod} alt="Logo" style={styles.logo} />
                 <h1 style={styles.title}>SIGN IN</h1>
@@ -114,32 +152,29 @@ const LoginPage = () => {
                     <div style={styles.inputGroup}>
                         <div style={styles.inputWrapper}>
                         <span style={styles.inputIcon}><MdLockOpen /></span>
-                            <div style={{ width: '100%' }}>
+                            <div style={{ width: '100%', position: 'relative' }}>
                                 <input
                                     type={showPassword ? "text" : "password"}
                                     value={password}
                                     onChange={(e) => {
-                                        const value = e.target.value.slice(0, 8); // Limit to 8 characters
+                                        const value = e.target.value.slice(0, 8); // limit to 8 characters
                                         setPassword(value);
-                                        
-                                        // Show error if less than 8 characters
-                                        if (value.length > 0) {
-                                            if (value.length < 8) {
-                                                setPasswordError(`Password must be 8 characters (${value.length}/8)`);
-                                            } else {
-                                                setPasswordError('');
-                                            }
-                                            setError(''); // Clear any previous error when typing
+
+                                        // Live hint if less than 8 characters
+                                        if (value.length > 0 && value.length < 8) {
+                                            setPasswordError(`Password must be 8 characters (${value.length}/8)`);
                                         } else {
                                             setPasswordError('');
                                         }
+                                        setError(''); // Clear any previous error when typing
                                     }}
                                     required
+                                    minLength={8}
+                                    maxLength={8}
                                     style={styles.input}
                                     disabled={loading}
                                     placeholder="Password"
                                     autoComplete="current-password"
-                                    maxLength={8}
                                 />
                                 <button 
                                     type="button"
@@ -240,6 +275,8 @@ const styles = {
         display: 'flex',
         alignItems: 'center',
         width: '100%',
+        maxWidth: '100%',
+        overflow: 'hidden',
     },
     inputIcon: {
         position: 'absolute',
@@ -250,9 +287,12 @@ const styles = {
         fontSize: 'clamp(16px, 4vw, 20px)',
         display: 'flex',
         alignItems: 'center',
+        zIndex: 3,
+        pointerEvents: 'none',
     },
     input: {
         width: '100%',
+        boxSizing: 'border-box',
         padding: 'clamp(12px, 3vw, 15px) 45px',
         fontSize: 'clamp(14px, 3.5vw, 16px)',
         border: '1px solid #ddd',
@@ -261,6 +301,8 @@ const styles = {
         boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
         outline: 'none',
         transition: 'all 0.2s ease',
+        position: 'relative',
+        zIndex: 1,
         '&:focus': {
             borderColor: '#rgba(103, 70, 30, 0.7)'
         },
@@ -276,6 +318,7 @@ const styles = {
         padding: '0',
         fontSize: 'clamp(16px, 4vw, 20px)',
         color: '#666',
+        zIndex: 4,
     },
     errorMessage: {
         color: '#dc3545',
@@ -359,6 +402,40 @@ const styles = {
         marginBottom: 'clamp(15px, 4vw, 20px)',
         textAlign: 'center',
         width: '100%',
+    },
+    loadingOverlay: {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+        backdropFilter: 'blur(1px)'
+    },
+    loadingBox: {
+        backgroundColor: '#fff',
+        borderRadius: '12px',
+        padding: '20px 24px',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px'
+    },
+    spinner: {
+        width: '28px',
+        height: '28px',
+        border: '3px solid #f3f3f3',
+        borderTop: '3px solid #ff8c00',
+        borderRadius: '50%',
+        animation: 'spin 1s linear infinite'
+    },
+    loadingText: {
+        color: '#333',
+        fontWeight: 600
     }
 }
 

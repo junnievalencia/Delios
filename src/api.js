@@ -1,8 +1,11 @@
 import axios from 'axios';
 import { getToken, getRefreshToken, removeToken, removeRefreshToken, removeUser, setToken } from './utils/tokenUtils';
 
-// Use environment variable for API base URL, fallback to Render URL
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://capstonedelibup.onrender.com/api";
+// Use a relative base during local development to leverage Vite's proxy and avoid CORS
+// In production, fall back to the provided environment variable or the Render URL
+const API_BASE_URL = import.meta.env.DEV
+    ? '/api'
+    : (import.meta.env.VITE_API_BASE_URL || "https://capstonedelibup.onrender.com/api");
 
 // Create axios instance with default config
 const api = axios.create({
@@ -10,6 +13,8 @@ const api = axios.create({
     headers: {
         'Content-Type': 'application/json',
     },
+    // Prevent requests from hanging indefinitely (helps surface errors faster)
+    timeout: 12000,
 });
 
 // Add auth token to requests if available
@@ -78,13 +83,16 @@ export const auth = {
     },
 
     logout: async () => {
+        // Always clear client-side session, regardless of server response
         try {
-            await api.post('/auth/logout');
+            // Try to notify backend, but don't block UX; use a shorter timeout
+            await api.post('/auth/logout', undefined, { timeout: 4000 });
+        } catch (_) {
+            // Swallow errors/timeouts – client logout should proceed regardless
+        } finally {
             removeToken();
             removeRefreshToken();
             removeUser();
-        } catch (error) {
-            throw error.response?.data || error.message;
         }
     },
 
@@ -130,6 +138,34 @@ export const auth = {
                 token, 
                 newPassword 
             });
+            return response.data;
+        } catch (error) {
+            throw error.response?.data || error.message;
+        }
+    },
+
+    // OTP-based password reset
+    sendPasswordResetOtp: async (email) => {
+        try {
+            const response = await api.post('/auth/forgot-password-otp', { email });
+            return response.data;
+        } catch (error) {
+            throw error.response?.data || error.message;
+        }
+    },
+
+    resetPasswordWithOtp: async ({ email, otp, newPassword }) => {
+        try {
+            const response = await api.post('/auth/reset-password-otp', { email, otp, newPassword });
+            return response.data;
+        } catch (error) {
+            throw error.response?.data || error.message;
+        }
+    },
+
+    resendPasswordResetOtp: async (email) => {
+        try {
+            const response = await api.post('/auth/resend-password-otp', { email });
             return response.data;
         } catch (error) {
             throw error.response?.data || error.message;
@@ -694,6 +730,20 @@ export const review = {
         } catch (error) {
             throw error.response?.data || error.message;
         }
+    }
+};
+
+// Lightweight warmup ping to reduce perceived cold start latency
+// Intentionally ignores errors and times out quickly
+export const warmup = async () => {
+    try {
+        // Hit the backend health endpoint (proxied in dev via /health)
+        await axios.get(import.meta.env.DEV ? '/health' : (new URL('/health', API_BASE_URL.replace(/\/api$/, ''))).toString(), {
+            timeout: 2500,
+            params: { _t: Date.now() }
+        });
+    } catch (e) {
+        // ignore any error; goal is to just trigger the server to wake up
     }
 };
 

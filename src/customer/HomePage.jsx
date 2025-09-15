@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MdSearch, MdHome, MdFavoriteBorder, MdShoppingCart, MdReceipt, MdPerson, MdFilterList, MdClose, MdMenuOpen, MdSettings, MdLogout, MdStore, MdAddShoppingCart } from 'react-icons/md';
+import { MdSearch, MdHome, MdFavoriteBorder, MdShoppingCart, MdReceipt, MdPerson, MdFilterList, MdClose, MdMenuOpen, MdSettings, MdLogout, MdStore, MdAddShoppingCart, MdCheckCircle } from 'react-icons/md';
 import Slider from 'react-slick';
 import { toast, ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -9,6 +9,8 @@ import 'slick-carousel/slick/slick-theme.css';
 import { store as storeApi, product as productApi, auth, cart } from '../api';
 import '../styles/HomePage.css';
 import { getUser } from '../utils/tokenUtils';
+import useDebouncedRefresh from '../hooks/useDebouncedRefresh';
+import { SkeletonCard } from '../components/Skeletons';
 
 const styles = {
   bannerContainer: {
@@ -107,9 +109,40 @@ const HomePage = () => {
   });
   const [categories, setCategories] = useState(['All']);
   const [cartCount, setCartCount] = useState(0);
+  const [successModal, setSuccessModal] = useState({ open: false, message: '' });
+  const STORES_CACHE_KEY = 'bufood:stores';
+  const PRODUCTS_CACHE_KEY = 'bufood:products';
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
-    fetchData();
+    // Cache-first render
+    let hadCache = false;
+    try {
+      const cachedStores = JSON.parse(localStorage.getItem(STORES_CACHE_KEY) || 'null');
+      const cachedProducts = JSON.parse(localStorage.getItem(PRODUCTS_CACHE_KEY) || 'null');
+      if (Array.isArray(cachedStores) || Array.isArray(cachedProducts)) {
+        hadCache = true;
+        if (Array.isArray(cachedStores)) {
+          setStores(cachedStores);
+        }
+        if (Array.isArray(cachedProducts)) {
+          setAllProducts(cachedProducts);
+          setFilteredProducts(cachedProducts);
+          setPopularProducts(cachedProducts.slice(0, 4));
+          const uniqueCategories = ['All', ...new Set(
+            cachedProducts
+              .filter(p => p && p.category)
+              .map(p => p.category)
+          )];
+          setCategories(uniqueCategories);
+        }
+        // Since we rendered from cache, remove loader immediately
+        setLoading(false);
+      }
+    } catch (_) {}
+
+    // Always fetch fresh data; show loader only if no cache
+    fetchData({ showLoader: !hadCache });
     // Fetch initial cart count
     fetchCartCount();
   }, []);
@@ -181,38 +214,55 @@ const HomePage = () => {
     setError(null);
 
     try {
-      // Fetch stores data
-      try {
-        const storesData = await storeApi.getAllStores();
+      // Fire both requests concurrently
+      const [storesRes, productsRes] = await Promise.allSettled([
+        storeApi.getAllStores(),
+        productApi.getAllProducts()
+      ]);
+
+      // Handle stores result
+      if (storesRes.status === 'fulfilled') {
+        const storesData = storesRes.value;
         setStores(storesData || []);
-      } catch (storeErr) {
+        try {
+          localStorage.setItem(STORES_CACHE_KEY, JSON.stringify(storesData || []));
+        } catch (_) {}
+      } else {
+        const storeErr = storesRes.reason;
         console.error('Error fetching stores:', storeErr);
-        setError(storeErr.message || 'Failed to load stores');
         setStores([]);
+        // Prefer not to override an existing error from products if that one also fails
+        setError(prev => prev || storeErr?.message || 'Failed to load stores');
       }
 
-      // Fetch all products
-      try {
-        const allProductsData = await productApi.getAllProducts();
+      // Handle products result
+      if (productsRes.status === 'fulfilled') {
+        const allProductsData = productsRes.value;
         setAllProducts(allProductsData || []);
         setFilteredProducts(allProductsData || []);
-        
+
         // For popular products, take the first 4 products
         setPopularProducts(allProductsData?.slice(0, 4) || []);
 
         // Extract unique categories
         if (allProductsData && allProductsData.length > 0) {
-          const uniqueCategories = ['All', ...new Set(allProductsData
-            .filter(product => product.category)
-            .map(product => product.category))];
+          const uniqueCategories = ['All', ...new Set(
+            allProductsData
+              .filter(product => product.category)
+              .map(product => product.category)
+          )];
           setCategories(uniqueCategories);
         }
-      } catch (productErr) {
+        try {
+          localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(allProductsData || []));
+        } catch (_) {}
+      } else {
+        const productErr = productsRes.reason;
         console.error('Error fetching products:', productErr);
-        setError(productErr.message || 'Failed to load products');
         setAllProducts([]);
         setFilteredProducts([]);
         setPopularProducts([]);
+        setError(prev => prev || productErr?.message || 'Failed to load products');
       }
 
     } catch (err) {
@@ -225,38 +275,24 @@ const HomePage = () => {
     }
   };
 
-  // Auto-refresh: interval + when tab gains focus/visibility
-  useEffect(() => {
-    const refreshSilently = () => {
-      fetchData({ showLoader: false });
-      fetchCartCount();
-    };
-
-    const intervalId = setInterval(refreshSilently, 30000);
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        refreshSilently();
-      }
-    };
-    const handleFocus = () => {
-      refreshSilently();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleFocus);
-
-    return () => {
-      clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, []);
+  // Debounced background refresh on focus/visibility/interval
+  useDebouncedRefresh(async () => {
+    setIsRefreshing(true);
+    try {
+      await fetchData({ showLoader: false });
+      await fetchCartCount();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, { delayMs: 600, intervalMs: 30000 });
 
   const handleAddToCart = async (product) => {
     try {
       await cart.addToCart(product._id, 1);
-      // Show success message
-      toast.success('Product added to cart successfully');
+      // Show success modal message
+      setSuccessModal({ open: true, message: 'Product added to cart successfully' });
+      // Auto-close the modal after a short delay
+      setTimeout(() => setSuccessModal({ open: false, message: '' }), 1200);
       // Update cart badge count
       setCartCount((prev) => (Number.isFinite(prev) ? prev + 1 : 1));
      } catch (err) {
@@ -387,6 +423,46 @@ const HomePage = () => {
   return (
     <div className="pageContainer">
       <ToastContainer position="top-center" autoClose={3000} />
+      {/* Success Modal */}
+      {successModal.open && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.25)',
+            zIndex: 2000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          onClick={() => setSuccessModal({ open: false, message: '' })}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#fff',
+              borderRadius: 12,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+              padding: '22px 28px',
+              minWidth: 260,
+              maxWidth: '90vw',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              alignItems: 'center'
+            }}
+          >
+            <MdCheckCircle size={44} color="#2E7D32" />
+            <div style={{ fontSize: 16, fontWeight: 600, color: '#2E7D32', marginTop: 6 }}>
+              {successModal.message || 'Success'}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mainContainer">
         {/* Header */}
         <div className="header">
@@ -524,6 +600,7 @@ const HomePage = () => {
                         src={store.bannerImage || 'https://i.ibb.co/qkGWKQX/pizza-promotion.jpg'} 
                         alt={store.storeName} 
                         style={styles.bannerImage}
+                        loading="lazy"
                       />
                       <div style={styles.bannerGradient}></div>
                       <div style={styles.bannerContent}>
@@ -544,6 +621,7 @@ const HomePage = () => {
                   src="https://i.ibb.co/qkGWKQX/pizza-promotion.jpg" 
                   alt="Welcome to BuFood" 
                   style={styles.bannerImage}
+                  loading="lazy"
                 />
                 <div style={styles.bannerGradient}></div>
                 <div style={styles.bannerContent}>
@@ -561,6 +639,11 @@ const HomePage = () => {
             <h2 className="sectionTitle">Popular</h2>
             
             <div className="productsGrid">
+              {isRefreshing && popularProducts.length > 0 && (
+                Array.from({ length: Math.min(4, popularProducts.length) }).map((_, i) => (
+                  <SkeletonCard key={`skeleton-pop-${i}`} height={260} />
+                ))
+              )}
               {popularProducts.length > 0 ? (
                 popularProducts.slice(0, 4).map(product => (
                   <div 
@@ -575,6 +658,7 @@ const HomePage = () => {
                         alt={product.name || 'Chicken With Rice'} 
                         className="productImage"
                         style={{ filter: product.availability === 'Out of Stock' ? 'blur(1.5px) grayscale(60%) brightness(0.85)' : 'none', transition: 'filter 0.2s ease' }}
+                        loading="lazy"
                       />
                       {product.availability === 'Out of Stock' && (
                         <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '1.05rem', pointerEvents: 'none' }}>
@@ -636,6 +720,7 @@ const HomePage = () => {
                         src={product.image} 
                         alt={product.name} 
                         className="productImage"
+                        loading="lazy"
                       />
                     </div>
                     <div className="productInfo">
@@ -668,6 +753,11 @@ const HomePage = () => {
             
             {filteredProducts.length > 0 ? (
               <div className="productsGrid">
+                {isRefreshing && filteredProducts.length > 0 && (
+                  Array.from({ length: Math.min(8, filteredProducts.length) }).map((_, i) => (
+                    <SkeletonCard key={`skeleton-all-${i}`} height={260} />
+                  ))
+                )}
                 {filteredProducts.map(product => (
                   <div 
                     key={product._id || Math.random()} 
@@ -681,6 +771,7 @@ const HomePage = () => {
                         alt={product.name || 'Product'} 
                         className="productImage"
                         style={{ filter: product.availability === 'Out of Stock' ? 'blur(1.5px) grayscale(60%) brightness(0.85)' : 'none', transition: 'filter 0.2s ease' }}
+                        loading="lazy"
                       />
                       {product.availability === 'Out of Stock' && (
                         <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '1.05rem', pointerEvents: 'none' }}>

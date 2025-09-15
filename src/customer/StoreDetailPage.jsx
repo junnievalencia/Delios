@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import useDebouncedRefresh from '../hooks/useDebouncedRefresh';
+import { SkeletonCard } from '../components/Skeletons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowBack } from '@mui/icons-material';
 import axios from 'axios';
@@ -8,6 +10,7 @@ import 'react-toastify/dist/ReactToastify.css';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { isStoreInFavorites, toggleStoreFavorite } from '../utils/favoriteUtils';
 import { getToken } from '../utils/tokenUtils';
+import { MdCheckCircle } from 'react-icons/md';
 
 // Styled Components
 const StoreDetailWrapper = styled.div`
@@ -558,8 +561,13 @@ const StoreDetailPage = () => {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('Products');
   const [isFavorite, setIsFavorite] = useState(false);
+  const [successModal, setSuccessModal] = useState({ open: false, message: '' });
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://capstonedelibup.onrender.com/api';
+  const API_BASE_URL = import.meta.env.DEV
+    ? '/api'
+    : (import.meta.env.VITE_API_BASE_URL || 'https://capstonedelibup.onrender.com/api');
+  const STORE_CACHE_KEY = `bufood:store:${storeId}`;
 
   useEffect(() => {
     // Check favorite state
@@ -567,30 +575,65 @@ const StoreDetailPage = () => {
   }, [storeId]);
 
   useEffect(() => {
-    const fetchStore = async () => {
+    let hadCache = false;
+    // Cache-first render
+    try {
+      const cached = JSON.parse(localStorage.getItem(STORE_CACHE_KEY) || 'null');
+      if (cached && typeof cached === 'object') {
+        hadCache = true;
+        setStore(cached);
+        setProducts(Array.isArray(cached.products) ? cached.products : []);
+        setLoading(false);
+      }
+    } catch (_) {}
+
+    const fetchStore = async ({ showLoader = true } = {}) => {
       try {
-        setLoading(true);
+        if (showLoader) setLoading(true);
         setError('');
         const res = await fetch(`${API_BASE_URL}/customers/store/${storeId}`);
         if (!res.ok) throw new Error('Failed to load store');
         const data = await res.json();
         setStore(data);
         setProducts(Array.isArray(data.products) ? data.products : []);
+        try { localStorage.setItem(STORE_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
       } catch (err) {
         console.error('Error fetching store:', err);
-        setError('Failed to load store. Please try again.');
+        if (!hadCache) setError('Failed to load store. Please try again.');
       } finally {
-        setLoading(false);
+        if (showLoader) setLoading(false);
       }
     };
-    fetchStore();
+    // Always fetch fresh; show loader only if no cache
+    fetchStore({ showLoader: !hadCache });
   }, [API_BASE_URL, storeId]);
+
+  // Debounced background refresh
+  useDebouncedRefresh(async () => {
+    setIsRefreshing(true);
+    try {
+      // silent refresh
+      try {
+        const res = await fetch(`${API_BASE_URL}/customers/store/${storeId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setStore(data);
+          setProducts(Array.isArray(data.products) ? data.products : []);
+          try { localStorage.setItem(STORE_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+        }
+      } catch (_) {}
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, { delayMs: 600, intervalMs: 30000 });
 
   const handleGoBack = () => navigate('/customer/stores');
   const handleToggleFavorite = () => {
     const next = toggleStoreFavorite(storeId);
     setIsFavorite(next);
-    toast[next ? 'success' : 'info'](next ? 'Added to favorites' : 'Removed from favorites');
+    const msg = next ? 'Added to favorites' : 'Removed from favorites';
+    setSuccessModal({ open: true, message: msg });
+    setTimeout(() => setSuccessModal({ open: false, message: '' }), 1200);
   };
 
   const handleKeyDown = (e, product) => {
@@ -627,6 +670,46 @@ const StoreDetailPage = () => {
 
   return (
     <StoreDetailWrapper>
+      {/* Success Modal */}
+      {successModal.open && (
+        <div
+          onClick={() => setSuccessModal({ open: false, message: '' })}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.25)',
+            zIndex: 2000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#fff',
+              borderRadius: 12,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+              padding: '22px 28px',
+              minWidth: 260,
+              maxWidth: '90vw',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              alignItems: 'center'
+            }}
+          >
+            <MdCheckCircle size={44} color="#2E7D32" />
+            <div style={{ fontSize: 16, fontWeight: 600, color: '#2E7D32', marginTop: 6 }}>
+              {successModal.message || 'Success'}
+            </div>
+          </div>
+        </div>
+      )}
       <Header>
         <HeaderContent>
           <BackButton onClick={handleGoBack} aria-label="Go back">
@@ -644,6 +727,7 @@ const StoreDetailPage = () => {
                 <StoreImage
                   src={store.image || store.logo || 'https://placehold.co/140x140/ff8c00/ffffff?text=Store'}
                   alt={store.storeName}
+                  loading="lazy"
                 />
                 <StoreText>
                   <StoreTitle>{store.storeName}</StoreTitle>
@@ -685,6 +769,11 @@ const StoreDetailPage = () => {
           {activeTab === 'Products' ? (
             <ProductsSection>
               <ProductsGrid role="list" aria-label="Products">
+                {isRefreshing && products.length > 0 && (
+                  Array.from({ length: Math.min(6, products.length) }).map((_, i) => (
+                    <SkeletonCard key={`skeleton-prod-${i}`} height={220} />
+                  ))
+                )}
                 {products.length > 0 ? (
                   products.map((product) => (
                     <ProductCard

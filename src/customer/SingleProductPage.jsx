@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { product, cart, review } from '../api';
 import { toast, ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import { MdArrowBack, MdShoppingCart, MdAdd, MdRemove } from 'react-icons/md';
+import { MdArrowBack, MdShoppingCart, MdAdd, MdRemove, MdCheckCircle } from 'react-icons/md';
 import { Favorite, FavoriteBorder } from '@mui/icons-material';
 import { toggleFavorite, isInFavorites } from '../utils/favoriteUtils';
 import styled from 'styled-components';
@@ -388,6 +388,7 @@ const SingleProductPage = () => {
     const [isFavorite, setIsFavorite] = useState(false);
     const [reviews, setReviews] = useState([]);
     const [currentUser, setCurrentUser] = useState(null);
+    const [successModal, setSuccessModal] = useState({ open: false, message: '' });
 
     useEffect(() => {
         // Load current user from localStorage
@@ -404,19 +405,35 @@ const SingleProductPage = () => {
     };
 
     useEffect(() => {
-        const fetchProductDetails = async () => {
+        const CACHE_KEY = `bufood:product:${productId}`;
+        let hadCache = false;
+
+        // Cache-first render
+        try {
+            const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+            if (cached && typeof cached === 'object') {
+                hadCache = true;
+                setProductData(cached);
+                setLoading(false);
+            }
+        } catch (_) {}
+
+        const fetchProductDetails = async ({ showLoader = true } = {}) => {
             try {
+                if (showLoader) setLoading(true);
                 const data = await product.getProductById(productId);
                 setProductData(data);
+                try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (_) {}
             } catch (err) {
                 setError(err.message || 'Failed to fetch product details');
                 toast.error(err.message || 'Failed to fetch product details');
             } finally {
-                setLoading(false);
+                if (showLoader) setLoading(false);
             }
         };
 
-        fetchProductDetails();
+        // Always fetch fresh; show loader only if no cache
+        fetchProductDetails({ showLoader: !hadCache });
     }, [productId]);
 
     useEffect(() => {
@@ -438,7 +455,8 @@ const SingleProductPage = () => {
     const handleAddToCart = async () => {
         try {
             await cart.addToCart(productId, quantity);
-            toast.success('Product added to cart successfully');
+            setSuccessModal({ open: true, message: 'Product added to cart successfully' });
+            setTimeout(() => setSuccessModal({ open: false, message: '' }), 1200);
         } catch (err) {
             const errorMessage = err.message || err.error || 'Failed to add product to cart';
             toast.error(errorMessage);
@@ -457,6 +475,46 @@ const SingleProductPage = () => {
     return (
         <PageContainer>
             <ToastContainer position="top-right" autoClose={3000} />
+            {/* Success Modal */}
+            {successModal.open && (
+                <div
+                    onClick={() => setSuccessModal({ open: false, message: '' })}
+                    style={{
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        background: 'rgba(0,0,0,0.25)',
+                        zIndex: 2000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: '#fff',
+                            borderRadius: 12,
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+                            padding: '22px 28px',
+                            minWidth: 260,
+                            maxWidth: '90vw',
+                            textAlign: 'center',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 10,
+                            alignItems: 'center'
+                        }}
+                    >
+                        <MdCheckCircle size={44} color="#2E7D32" />
+                        <div style={{ fontSize: 16, fontWeight: 600, color: '#2E7D32', marginTop: 6 }}>
+                            {successModal.message || 'Success'}
+                        </div>
+                    </div>
+                </div>
+            )}
             
             <Header>
                 <BackButton onClick={handleGoBack}>
@@ -474,6 +532,7 @@ const SingleProductPage = () => {
                                 src={productData.image} 
                                 alt={productData.name}
                                 $isOut={productData.availability === 'Out of Stock'}
+                                loading="lazy"
                             />
                             {productData.availability === 'Out of Stock' && (
                                 <OutOfStockOverlay>Out of Stock</OutOfStockOverlay>
@@ -488,7 +547,9 @@ const SingleProductPage = () => {
                                         e.stopPropagation();
                                         const newFavoriteStatus = toggleFavorite(productId);
                                         setIsFavorite(newFavoriteStatus);
-                                        toast.success(newFavoriteStatus ? 'Added to favorites' : 'Removed from favorites');
+                                        const msg = newFavoriteStatus ? 'Added to favorites' : 'Removed from favorites';
+                                        setSuccessModal({ open: true, message: msg });
+                                        setTimeout(() => setSuccessModal({ open: false, message: '' }), 1200);
                                     }}
                                     aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
                                 >
@@ -595,7 +656,7 @@ const SingleProductPage = () => {
                                         }}>
                                             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                                                 {displayImage ? (
-                                                    <img src={displayImage} alt={displayName || 'Reviewer'} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', marginRight: 12, background: ' #eeeeee' }} onError={e => { e.target.onerror = null; e.target.src = 'https://ui-avatars.com/api/?name=' + encodeURIComponent(displayName || 'U'); }} />
+                                                    <img src={displayImage} alt={displayName || 'Reviewer'} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', marginRight: 12, background: ' #eeeeee' }} loading="lazy" onError={e => { e.target.onerror = null; e.target.src = 'https://ui-avatars.com/api/?name=' + encodeURIComponent(displayName || 'U'); }} />
                                                 ) : (
                                                 <div style={{
                                                     width: 36,

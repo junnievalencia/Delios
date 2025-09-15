@@ -13,6 +13,7 @@ import {
 } from "react-icons/md";
 import { FiRefreshCw } from 'react-icons/fi';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { SkeletonCard } from '../components/Skeletons';
 
 const DashboardCard = ({ title, value, icon: Icon, to, onClick }) => (
   <Link to={to} className="grid-item" onClick={onClick}>
@@ -48,8 +49,49 @@ const DashboardPage = () => {
   };
 
   useEffect(() => {
-    fetchStoreData();
-    fetchOrderStats();
+    // Cache-first: hydrate from cache to avoid blank UI after idle
+    let hadCache = false;
+    try {
+      const raw = localStorage.getItem('bufood:seller:store');
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && typeof cached === 'object') {
+          setStoreData(cached);
+          setLoading(false);
+          hadCache = true;
+        }
+      }
+    } catch (_) {}
+
+    // Fetch store data; show loader only if no cache
+    fetchStoreData({ showLoader: !hadCache });
+
+    // Defer orders fetching until after first paint/idle
+    const defer = (fn) => {
+      if ('requestIdleCallback' in window) {
+        // @ts-ignore
+        return window.requestIdleCallback(fn, { timeout: 800 });
+      }
+      return setTimeout(fn, 0);
+    };
+
+    const idleId = defer(async () => {
+      try {
+        // Light fetch to render quick stats
+        await fetchOrderStatsLight(20);
+        // Then load the rest in the background
+        setTimeout(() => {
+          fetchOrderStatsFull();
+        }, 300);
+      } catch (_) {
+        // ignore; light fetch failures will be retried by user refresh or next mount
+      }
+    });
+
+    return () => {
+      if (typeof idleId === 'number') clearTimeout(idleId);
+      // requestIdleCallback cancel not standardized across browsers; safe to ignore
+    };
   }, []);
 
   // Smooth auto-refresh: react to tab focus/visibility changes and cross-tab events
@@ -129,42 +171,76 @@ const DashboardPage = () => {
     } catch (_) {}
   }, []);
 
-  const fetchStoreData = async () => {
+  const fetchStoreData = async ({ showLoader = true } = {}) => {
     try {
-      setLoading(true);
+      if (showLoader) setLoading(true);
       const data = await store.getMyStore();
       setStoreData(data);
+      // persist cache
+      try { localStorage.setItem('bufood:seller:store', JSON.stringify(data)); } catch (_) {}
       setError(null);
     } catch (err) {
-      setError(err.message || 'Failed to fetch store data');
+      const status = err?.response?.status || err?.status;
+      if (status === 401) {
+        // Session expired; redirect to login
+        try { await auth.logout(); } catch (_) {}
+        navigate('/login', { replace: true, state: { message: 'Your session expired. Please sign in again.' } });
+        return;
+      }
+      // Only show fatal error if we did not have cached data to display
+      if (!storeData) {
+        setError(err?.message || 'Failed to fetch store data');
+      }
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   };
 
-  const fetchOrderStats = async () => {
+  // Helper to compute and set stats from orders
+  const applyOrderStats = (orders) => {
+    let pending = 0, completed = 0, earnings = 0;
+    for (const o of orders) {
+      if (!['Delivered', 'Canceled', 'Rejected'].includes(o.status)) pending++;
+      if (o.status === 'Delivered') {
+        completed++;
+        if (o.paymentStatus === 'Paid') earnings += o.totalAmount;
+      }
+    }
+    setOrderStats({ pending, completed, earnings, orders });
+    setOrdersForChart(orders);
+  };
+
+  // Light, quick fetch for initial paint
+  const fetchOrderStatsLight = async (limit = 20) => {
     try {
-      // Fetch all seller orders (use backend max limit 100)
+      const ordersRes = await order.getSellerOrders({ page: 1, limit, sortBy: 'createdAt', sortOrder: 'desc' });
+      const orders = ordersRes.data?.orders || ordersRes.orders || [];
+      applyOrderStats(orders);
+    } catch (_) {
+      // silent; not critical for first paint
+    }
+  };
+
+  // Full background fetch to hydrate analytics
+  const fetchOrderStatsFull = async () => {
+    try {
       const ordersRes = await order.getSellerOrders({ page: 1, limit: 100, sortBy: 'createdAt', sortOrder: 'desc' });
       const orders = ordersRes.data?.orders || ordersRes.orders || [];
-      let pending = 0, completed = 0, earnings = 0;
-      for (const o of orders) {
-        if (!['Delivered', 'Canceled', 'Rejected'].includes(o.status)) pending++;
-        if (o.status === 'Delivered') {
-          completed++;
-          if (o.paymentStatus === 'Paid') earnings += o.totalAmount;
-        }
-      }
-      setOrderStats({ pending, completed, earnings, orders });
-      setOrdersForChart(orders);
-    } catch (err) {
-      // Optionally handle error
+      applyOrderStats(orders);
+    } catch (_) {
+      // silent; user can manually refresh if needed
     }
   };
 
   const handleLogout = async () => {
-    await auth.logout();
-    navigate('/login');
+    // Close menu immediately for responsive UX
+    setIsMenuOpen(false);
+    try {
+      await auth.logout();
+    } finally {
+      // Always navigate to login even if logout API fails or times out
+      navigate('/login', { replace: true, state: { message: 'You have been signed out.' } });
+    }
   };
 
   const handleBack = () => {
@@ -249,9 +325,26 @@ const DashboardPage = () => {
   if (loading) {
     return (
       <div className="main-container">
-        <div className="loading-container">
-          <div className="spinner"></div>
-          <p>Loading store information...</p>
+        <div className="content-container">
+          <div className="banner-wrapper" style={{ position: 'relative' }}>
+            <SkeletonCard height={300} />
+          </div>
+          <h2 className="dashboard-title">DASHBOARD</h2>
+          <div className="form-container">
+            <div className="dashboard-content">
+              <section className="summary-cards" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
+                <SkeletonCard height={120} />
+                <SkeletonCard height={120} />
+              </section>
+              <section>
+                <div className="dashboard-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16, marginTop: 16 }}>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <SkeletonCard key={`dash-skel-${i}`} height={140} />
+                  ))}
+                </div>
+              </section>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -307,7 +400,16 @@ const DashboardPage = () => {
           <button
             className="refresh-btn"
             aria-label="Refresh"
-            onClick={() => { setLoading(true); fetchStoreData(); fetchOrderStats(); }}
+            onClick={() => {
+              setLoading(true);
+              fetchStoreData();
+              // Run staged orders refresh similar to mount
+              fetchOrderStatsLight(20).finally(() => {
+                setTimeout(() => {
+                  fetchOrderStatsFull();
+                }, 300);
+              });
+            }}
             disabled={loading}
             tabIndex={0}
             style={{
