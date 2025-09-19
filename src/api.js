@@ -5,7 +5,31 @@ import { getToken, getRefreshToken, removeToken, removeRefreshToken, removeUser,
 // In production, fall back to the provided environment variable or the Render URL
 const API_BASE_URL = import.meta.env.DEV
     ? '/api'
-    : (import.meta.env.VITE_API_BASE_URL || "https://capstonedelibup.onrender.com/api");
+    : (import.meta.env.VITE_API_BASE_URL || "https://capstonedelibup-o7sl.onrender.com/api");
+
+// Simple retry helper for POST with exponential backoff
+async function postWithRetry(url, data, config = {}, retries = 2, baseDelayMs = 1500) {
+    let attempt = 0;
+    // Ensure per-call timeout can override instance default
+    const cfg = { timeout: 30000, ...config };
+    while (true) {
+        try {
+            return await api.post(url, data, cfg);
+        } catch (error) {
+            const status = error.response?.status;
+            const isTimeout = error.code === 'ECONNABORTED';
+            const isGateway = status === 502 || status === 503 || status === 504;
+            const isNetwork = !error.response && !error.request;
+            if (attempt < retries && (isTimeout || isGateway || isNetwork)) {
+                const delay = baseDelayMs * Math.pow(2, attempt);
+                await new Promise(r => setTimeout(r, delay));
+                attempt += 1;
+                continue;
+            }
+            throw error;
+        }
+    }
+}
 
 // Create axios instance with default config
 const api = axios.create({
@@ -14,7 +38,8 @@ const api = axios.create({
         'Content-Type': 'application/json',
     },
     // Prevent requests from hanging indefinitely (helps surface errors faster)
-    timeout: 12000,
+    // Note: deployed server (cold starts) may need longer
+    timeout: 30000,
 });
 
 // Add auth token to requests if available
@@ -66,10 +91,19 @@ api.interceptors.response.use(
 export const auth = {
     register: async (userData) => {
         try {
-            const response = await api.post('/auth/register', userData);
+            const response = await postWithRetry('/auth/register', userData, { timeout: 30000 }, 2);
             return response.data;
         } catch (error) {
-            throw error.response?.data || error.message;
+            const backend = error.response?.data;
+            const status = error.response?.status;
+            // Collect express-validator errors if present
+            let validationMsg = '';
+            if (backend?.errors && Array.isArray(backend.errors)) {
+                validationMsg = backend.errors.map(e => e.msg || e.message).filter(Boolean).join('\n');
+            }
+            const message = validationMsg || (backend && (backend.message || backend.error || (typeof backend === 'string' ? backend : null))) || error.message || 'Registration failed';
+            // Throw a rich error object so UI can react (e.g., 409 duplicate, isVerified flag)
+            throw { message, status, isVerified: backend?.isVerified };
         }
     },
 

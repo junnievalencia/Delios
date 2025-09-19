@@ -1,3 +1,26 @@
+/*
+  * StoreDetailPage
+  * -------------------------------------------------------------
+  * Customer-facing page that displays a single store’s details
+  * and its products. It supports:
+  *  - Cache-first rendering of store data with background refresh
+  *  - Toggling a store as favorite (persisted in localStorage)
+  *  - Simple tab navigation (e.g., Products, Categories)
+  *  - Responsive, scrollable layout with styled-components
+  *  - Subtle success feedback modal on actions
+  *
+  * Data flow:
+  *  - On mount, try reading cached store data (localStorage)
+  *  - Fetch fresh data from API and update cache
+  *  - Periodically refresh using a debounced interval hook
+  *
+  * Navigation:
+  *  - Back button returns to the stores listing
+  *
+  * Styling:
+  *  - Uses styled-components for modular, responsive UI
+  */
+
 import React, { useState, useEffect } from 'react';
 import useDebouncedRefresh from '../hooks/useDebouncedRefresh';
 import { SkeletonCard } from '../components/Skeletons';
@@ -260,20 +283,20 @@ const StoreDescription = styled.p`
 
 const FavoriteButton = styled.button`
   position: absolute;
-  right: 0;
+  right: 20px;
   top: 50%;
   transform: translateY(-50%);
   background: none;
   border: none;
   color: ${props => props.$isFavorite ? ' #ff4444' : ' white'};
-  font-size: 24px;
+  font-size: 25px;
   cursor: pointer;
-  padding: 10px;
+  padding: 1px 10px 4px 10px;
   border-radius: 50%;
   transition: all 0.3s ease;
   
   &:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: none;
   }
 `;
 
@@ -563,18 +586,21 @@ const StoreDetailPage = () => {
   const [isFavorite, setIsFavorite] = useState(false);
   const [successModal, setSuccessModal] = useState({ open: false, message: '' });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState(null);
 
+  // Base API and cache key per store instance
   const API_BASE_URL = import.meta.env.DEV
     ? '/api'
-    : (import.meta.env.VITE_API_BASE_URL || 'https://capstonedelibup.onrender.com/api');
+    : (import.meta.env.VITE_API_BASE_URL || 'https://capstonedelibup-o7sl.onrender.com/api');
   const STORE_CACHE_KEY = `bufood:store:${storeId}`;
 
   useEffect(() => {
-    // Check favorite state
+    // Initialize favorite state from localStorage via utility
     setIsFavorite(isStoreInFavorites(storeId));
   }, [storeId]);
 
   useEffect(() => {
+    // Cache-first render followed by a network fetch to refresh data
     let hadCache = false;
     // Cache-first render
     try {
@@ -588,6 +614,7 @@ const StoreDetailPage = () => {
     } catch (_) {}
 
     const fetchStore = async ({ showLoader = true } = {}) => {
+      // Fetch store details and products from API; optionally show loader
       try {
         if (showLoader) setLoading(true);
         setError('');
@@ -608,7 +635,7 @@ const StoreDetailPage = () => {
     fetchStore({ showLoader: !hadCache });
   }, [API_BASE_URL, storeId]);
 
-  // Debounced background refresh
+  // Debounced background refresh (silent UI updates)
   useDebouncedRefresh(async () => {
     setIsRefreshing(true);
     try {
@@ -629,6 +656,7 @@ const StoreDetailPage = () => {
 
   const handleGoBack = () => navigate('/customer/stores');
   const handleToggleFavorite = () => {
+    // Toggle store favorite state and show quick success feedback
     const next = toggleStoreFavorite(storeId);
     setIsFavorite(next);
     const msg = next ? 'Added to favorites' : 'Removed from favorites';
@@ -646,7 +674,11 @@ const StoreDetailPage = () => {
     navigate(`/customer/product/${product._id}`);
   };
 
+  // Build unique categories and filter products by the selected category
   const categories = Array.from(new Set((products || []).map(p => p.category).filter(Boolean)));
+  const filteredProducts = selectedCategory
+    ? (products || []).filter(p => (p.category || '').toLowerCase() === String(selectedCategory).toLowerCase())
+    : (products || []);
 
   if (loading) {
     return (
@@ -768,14 +800,26 @@ const StoreDetailPage = () => {
 
           {activeTab === 'Products' ? (
             <ProductsSection>
+              {selectedCategory && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 14, color: '#666' }}>Showing category:</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#e65100', background: '#fff7f0', border: '1px solid #ffe0c2', borderRadius: 12, padding: '2px 8px' }}>{selectedCategory}</span>
+                  <button
+                    onClick={() => setSelectedCategory(null)}
+                    style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '6px 10px', fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Clear filter
+                  </button>
+                </div>
+              )}
               <ProductsGrid role="list" aria-label="Products">
-                {isRefreshing && products.length > 0 && (
-                  Array.from({ length: Math.min(6, products.length) }).map((_, i) => (
+                {isRefreshing && filteredProducts.length > 0 && (
+                  Array.from({ length: Math.min(6, filteredProducts.length) }).map((_, i) => (
                     <SkeletonCard key={`skeleton-prod-${i}`} height={220} />
                   ))
                 )}
-                {products.length > 0 ? (
-                  products.map((product) => (
+                {filteredProducts.length > 0 ? (
+                  filteredProducts.map((product) => (
                     <ProductCard
                       key={product._id}
                       onClick={() => handleBuy(product)}
@@ -796,6 +840,9 @@ const StoreDetailPage = () => {
                       )}
                       <ProductInfo>
                         <ProductName>{product.name}</ProductName>
+                        {Number.isFinite(product.soldCount) && (
+                          <div style={{ fontSize: '12px', color: '#777', marginTop: 2 }}>Sold: {product.soldCount}</div>
+                        )}
                         {product.description && (
                           <ProductDescription>{product.description}</ProductDescription>
                         )}
@@ -838,7 +885,15 @@ const StoreDetailPage = () => {
               <CategoriesGrid role="list" aria-label="Categories">
                 {categories.length > 0 ? (
                   categories.map((cat) => (
-                    <CategoryCard key={cat} role="listitem" aria-label={cat}>
+                    <CategoryCard
+                      key={cat}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Category ${cat}`}
+                      onClick={() => { setSelectedCategory(cat); setActiveTab('Products'); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { setSelectedCategory(cat); setActiveTab('Products'); } }}
+                      style={{ cursor: 'pointer' }}
+                    >
                       {cat}
                     </CategoryCard>
                   ))

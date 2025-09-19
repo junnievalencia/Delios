@@ -1,3 +1,26 @@
+/*
+  * FavoritesPage
+  * -------------------------------------------------------------
+  * Unified favorites screen for customers. It supports:
+  *  - Viewing favorite products and favorite stores (two tabs)
+  *  - Cache-first rendering from localStorage with background refresh
+  *  - Quick search filtering across products and stores
+  *  - Add-to-cart from favorites with optimistic cart badge update
+  *  - Removing products/stores from favorites with subtle success modal
+  *
+  * Data sources & caching keys:
+  *  - Products cache: bufood:products
+  *  - Stores cache:   bufood:stores
+  *  - Favorite product IDs: stored by favoriteUtils
+  *  - Favorite store IDs:   stored by favoriteUtils
+  *
+  * Refresh behavior:
+  *  - Debounced refresh on interval and when page regains focus/visibility
+  *
+  * Navigation:
+  *  - Back button returns to the home page
+  */
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { product as productApi, cart, store as storeApi } from '../api';
@@ -112,6 +135,7 @@ const FavoritesPage = () => {
   const refreshingRef = useRef(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Trigger a manual refresh (rehydrate both product and store favorites)
   const handleRefresh = () => {
     setLoading(true);
     setError('');
@@ -120,7 +144,7 @@ const FavoritesPage = () => {
   };
 
   useEffect(() => {
-    // Cache-first render
+    // Cache-first render for favorites lists; then fetch fresh in background
     let hadCache = false;
     try {
       const cachedFavorites = JSON.parse(localStorage.getItem(FAVORITES_CACHE_KEY) || 'null');
@@ -186,6 +210,7 @@ const FavoritesPage = () => {
   }, []);
 
   const fetchCartCount = async () => {
+    // Best-effort cart badge count; ignores errors to avoid UI noise
     try {
       const cartData = await cart.viewCart();
       const count = Array.isArray(cartData?.items)
@@ -198,6 +223,7 @@ const FavoritesPage = () => {
   };
 
   useEffect(() => {
+    // Filter favorites by search query for both tabs
     setFilteredProducts(
       favorites.filter(product =>
         product.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -211,6 +237,7 @@ const FavoritesPage = () => {
   }, [searchQuery, favorites, favoriteStores]);
 
   const loadFavorites = ({ showLoader = true } = {}) => {
+    // Read favorite product IDs and resolve them against cached/all products
     try {
       if (showLoader) setLoading(true);
       const favoriteIds = getAllFavorites();
@@ -228,6 +255,7 @@ const FavoritesPage = () => {
   };
 
   const fetchFavoriteProducts = async (favoriteIds, { showLoader = true } = {}) => {
+    // Prioritize cached product list from Home to minimize API calls
     try {
       // Prefer cached products from Home if available to avoid extra API calls
       let allProducts = null;
@@ -256,6 +284,7 @@ const FavoritesPage = () => {
   };
 
   const loadFavoriteStores = async ({ showLoader = true } = {}) => {
+    // Resolve favorite store IDs to minimal store cards; reuse cached stores if possible
     try {
       const storeIds = getAllStoreFavorites();
       if (!storeIds || storeIds.length === 0) {
@@ -326,14 +355,17 @@ const FavoritesPage = () => {
   };
 
   const handleGoBack = () => {
+    // Navigate to home
     navigate('/customer/home');
   };
 
   const handleViewProduct = (productId) => {
+    // Navigate to single product page
     navigate(`/customer/product/${productId}`);
   };
 
   const handleAddToCart = async (product) => {
+    // Optimistically add a single unit and bump cart badge
     try {
       await cart.addToCart(product._id, 1);
       // Optimistically update badge
@@ -350,6 +382,7 @@ const FavoritesPage = () => {
   };
 
   const handleRemoveFavorite = (productId) => {
+    // Toggle off product favorite and update local list
     toggleFavorite(productId);
     setFavorites(prev => prev.filter(product => product._id !== productId));
     setSuccessModal({ open: true, message: 'Product removed from favorites' });
@@ -357,12 +390,13 @@ const FavoritesPage = () => {
   };
 
   const handleRemoveStoreFavorite = async (storeId) => {
-    // Toggle favorite off and refresh the list from IDs
+    // Toggle off store favorite and rehydrate list
     toggleStoreFavorite(storeId);
     await loadFavoriteStores();
   };
 
   const handleViewStore = (storeId) => {
+    // Navigate to store detail
     navigate(`/customer/store/${storeId}`);
   };
 
@@ -449,7 +483,7 @@ const FavoritesPage = () => {
 
           <SearchBar>
             <SearchIcon>
-              <svg width="20" height="20" fill="none" viewBox="0 0 24 24">
+              <svg width="35" height="20" fill="none" viewBox="0 0 24 24">
                 <path d="M15.5 15.5L19 19" stroke="#BDBDBD" strokeWidth="2" strokeLinecap="round"/>
                 <circle cx="11" cy="11" r="7" stroke="#BDBDBD" strokeWidth="2"/>
               </svg>
@@ -672,7 +706,7 @@ const Title = styled.span`
 
 const SearchBar = styled.div`
   position: relative;
-  margin: 16px 24px;
+  margin: 10px 2px;
   background: #f5f5f5;
   border-radius: 8px;
   display: flex;
@@ -703,7 +737,7 @@ const Tabs = styled.div`
   display: flex;
   justify-content: flex-start;
   gap: 12px;
-  margin: 0 24px 18px;
+  margin: 0 2px 10px;
   border-bottom: 1px solid #f0f0f0;
   padding-bottom: 8px;
 `;

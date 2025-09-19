@@ -1,9 +1,28 @@
+/*
+  * HomePage
+  * -------------------------------------------------------------
+  * Main customer landing page. It shows:
+  *  - A banner slider of stores (from API, de-duplicated)
+  *  - Popular products and the full product grid with filters
+  *  - Sticky search bar and filter controls
+  *  - Add-to-cart interactions with success feedback modal
+  *  - Bottom navigation and a small popup menu (profile, orders, settings, logout)
+  *
+  * Data flow & caching:
+  *  - Cache-first render from localStorage for stores/products
+  *  - Fetch fresh data on mount and via debounced background refresh
+  *  - Cart count fetched and updated optimistically on add-to-cart
+  *
+  * Responsiveness:
+  *  - Product grid columns auto-adjust with viewport width
+  *  - Styled primarily via external CSS + inline styles
+  */
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MdSearch, MdHome, MdFavoriteBorder, MdShoppingCart, MdReceipt, MdPerson, MdFilterList, MdClose, MdMenuOpen, MdSettings, MdLogout, MdStore, MdAddShoppingCart, MdCheckCircle } from 'react-icons/md';
 import Slider from 'react-slick';
-import { toast, ToastContainer } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
+// Removed react-toastify to avoid popups on the homepage
 import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 import { store as storeApi, product as productApi, auth, cart } from '../api';
@@ -92,7 +111,27 @@ const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   
   useEffect(() => {
-    // Get user data from local storage
+    // Set responsive grid columns based on viewport width
+    const updateGrid = () => {
+      const w = window.innerWidth;
+      if (w >= 800) {
+        setGridCols(4);
+        setGridGap(20);
+      } else if (w >= 600) {
+        setGridCols(3);
+        setGridGap(16);
+      } else {
+        setGridCols(2);
+        setGridGap(12);
+      }
+    };
+    updateGrid();
+    window.addEventListener('resize', updateGrid);
+    return () => window.removeEventListener('resize', updateGrid);
+  }, []);
+
+  useEffect(() => {
+    // Get user data from localStorage for greeting
     const userData = getUser();
     if (userData && userData.name) {
       setUserName(userData.name);
@@ -110,12 +149,14 @@ const HomePage = () => {
   const [categories, setCategories] = useState(['All']);
   const [cartCount, setCartCount] = useState(0);
   const [successModal, setSuccessModal] = useState({ open: false, message: '' });
+  const [gridCols, setGridCols] = useState(2);
+  const [gridGap, setGridGap] = useState(12);
   const STORES_CACHE_KEY = 'bufood:stores';
   const PRODUCTS_CACHE_KEY = 'bufood:products';
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
-    // Cache-first render
+    // Cache-first render from localStorage, then refresh from API
     let hadCache = false;
     try {
       const cachedStores = JSON.parse(localStorage.getItem(STORES_CACHE_KEY) || 'null');
@@ -160,7 +201,7 @@ const HomePage = () => {
     }
   };
 
-  // Apply filters and search
+  // Apply filters and search to allProducts
   useEffect(() => {
     let result = [...allProducts];
     
@@ -208,6 +249,7 @@ const HomePage = () => {
   }, [searchQuery, filters, allProducts]);
 
   const fetchData = async ({ showLoader = true } = {}) => {
+    // Fetch stores and products concurrently; update caches on success
     if (showLoader) {
       setLoading(true);
     }
@@ -287,6 +329,7 @@ const HomePage = () => {
   }, { delayMs: 600, intervalMs: 30000 });
 
   const handleAddToCart = async (product) => {
+    // Add single unit to cart; show short success modal and bump badge
     try {
       await cart.addToCart(product._id, 1);
       // Show success modal message
@@ -296,9 +339,8 @@ const HomePage = () => {
       // Update cart badge count
       setCartCount((prev) => (Number.isFinite(prev) ? prev + 1 : 1));
      } catch (err) {
-                const errorMessage = err.message || err.error || 'Failed to add product to cart';
-                toast.error(errorMessage);
-                console.error('Add to cart error:', err);
+               const errorMessage = err.message || err.error || 'Failed to add product to cart';
+               console.error('Add to cart error:', errorMessage, err);
     }
   };
 
@@ -350,10 +392,12 @@ const HomePage = () => {
   };
 
   const handleProductClick = (productId) => {
+    // Navigate to product details
     navigate(`/customer/product/${productId}`);
   };
 
   const handleStoreClick = (storeId) => {
+    // Navigate to store details
     navigate(`/customer/store/${storeId}`);
   };
 
@@ -422,7 +466,6 @@ const HomePage = () => {
 
   return (
     <div className="pageContainer">
-      <ToastContainer position="top-center" autoClose={3000} />
       {/* Success Modal */}
       {successModal.open && (
         <div
@@ -467,8 +510,11 @@ const HomePage = () => {
         {/* Header */}
         <div className="header">
           <div>
-            <h1 style={{marginRight: '27px'}} className="greeting">Hello, {userName}</h1>
-            <p style={{marginLeft: '20px'}} className="subGreeting">What do you want to eat today?</p>
+            <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }} className="greeting">
+              <span style={{ color: '#666' }}>Hello, </span>
+              <span style={{ color: '#FF7A00' }}>{userName}</span>
+            </h1>
+            <p style={{ margin: '4px 0 0 0', color: '#777', fontSize: 13 }} className="subGreeting">What do you want to eat today?</p>
           </div>
           <button 
             className="menuToggle" 
@@ -500,9 +546,9 @@ const HomePage = () => {
         </div>
 
         {/* Search Bar - Fixed at the top */}
-        <div className="searchContainer" style={{ position: 'sticky', right: '10px', top: 0, zIndex: 10, backgroundColor: ' #faf9f9', padding: '6px' }}>
-          <div className="searchBar">
-            <MdSearch size={24} color=" #999999" />
+        <div className="searchContainer" style={{ position: 'sticky', right: '10px', top: 0, zIndex: 10, backgroundColor: '#ffffff', padding: '8px 6px' }}>
+          <div className="searchBar" style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', background: '#f5f5f5', borderRadius: 12, padding: '10px 12px' }}>
+            <MdSearch size={20} color="#999999" />
             <input 
               type="text" 
               placeholder="Search" 
@@ -512,15 +558,15 @@ const HomePage = () => {
             />
             {searchQuery && (
               <MdClose 
-                size={20} 
-                color=" #999999" 
+                size={18} 
+                color="#999999" 
                 onClick={clearSearch}
                 className="clearSearchIcon"
               />
             )}
           </div>
-          <div className="filterButton" onClick={toggleFilters} style={{ width: '33px', height: '33px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <MdFilterList size={24} color="#fff" />
+          <div className="filterButton" onClick={toggleFilters} style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#FF7A00', borderRadius: '50%' }}>
+            <MdFilterList size={22} color="#fff" />
           </div>
           {/* Auto-refresh enabled; manual refresh button removed */}
         </div>
@@ -587,13 +633,18 @@ const HomePage = () => {
           )}
 
           {/* Banner/Promotional Slider */}
-          <div style={styles.bannerContainer}>
+          <div style={{ ...styles.bannerContainer }}>
             {dedupedStores.length > 0 ? (
               <Slider {...sliderSettings}>
                 {dedupedStores.map(store => (
                   <div key={store._id} style={styles.slide}>
                     <div 
-                      style={styles.banner}
+                      style={{
+                        ...styles.banner,
+                        height: '28vw',
+                        minHeight: 140,
+                        maxHeight: 240
+                      }}
                       onClick={() => handleStoreClick(store._id)}
                     >
                       <img 
@@ -616,7 +667,7 @@ const HomePage = () => {
                 ))}
               </Slider>
             ) : (
-              <div style={styles.placeholderBanner}>
+              <div style={{ ...styles.placeholderBanner, height: '28vw', minHeight: 140, maxHeight: 240 }}>
                 <img 
                   src="https://i.ibb.co/qkGWKQX/pizza-promotion.jpg" 
                   alt="Welcome to BuFood" 
@@ -636,9 +687,15 @@ const HomePage = () => {
 
           {/* Popular Section */}
           <div className="sectionContainer">
-            <h2 className="sectionTitle">Popular</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 className="sectionTitle" style={{ margin: 0 }}>Popular</h2>
+              <button onClick={() => {
+                const el = document.getElementById('all-products');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }} style={{ background: 'transparent', border: 'none', color: '#FF7A00', fontWeight: 600, cursor: 'pointer' }}>See All</button>
+            </div>
             
-            <div className="productsGrid">
+            <div className="productsGrid" style={{ display: 'grid', gridTemplateColumns: `repeat(${gridCols}, 1fr)`, gap: gridGap }}>
               {isRefreshing && popularProducts.length > 0 && (
                 Array.from({ length: Math.min(4, popularProducts.length) }).map((_, i) => (
                   <SkeletonCard key={`skeleton-pop-${i}`} height={260} />
@@ -668,13 +725,14 @@ const HomePage = () => {
                     </div>
                     <div className="productInfo">
                       <h3 className="productName">{product.name || 'Chicken With Rice'}</h3>
-                         {(product.soldCount != null || product.peakOrderTimes) && (
-                           <div style={{ fontSize: '12px', color: '#777', marginTop: '2px' }}>
-                             {product.soldCount != null
-                               ? `Sold: ${product.soldCount}`
-                               : `Peak: ${formatPeakTimes(product.peakOrderTimes)}`}
-                           </div>
-                         )}
+                      {Number.isFinite(product.soldCount) && (
+                        <div style={{ fontSize: '12px', color: '#777', marginTop: 2 }}>Sold: {product.soldCount}</div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                        <span style={{ fontSize: 12, color: product.availability === 'Out of Stock' ? '#9e9e9e' : '#2e7d32', background: '#f2f2f2', borderRadius: 10, padding: '2px 8px' }}>
+                          {product.availability === 'Out of Stock' ? 'Out of Stock' : 'Available'}
+                        </span>
+                      </div>
                       <div className="productPriceRow">
                         <p className="productPrice">₱{product.price || '49'}</p>
                         <button 
@@ -746,13 +804,13 @@ const HomePage = () => {
           </div>
 
           {/* All Products Section */}
-          <div className="sectionContainer">
+          <div className="sectionContainer" id="all-products">
             <h2 className="sectionTitle">
               {searchQuery ? `Results for "${searchQuery}"` : "All Foods"}
             </h2>
             
             {filteredProducts.length > 0 ? (
-              <div className="productsGrid">
+              <div className="productsGrid" style={{ display: 'grid', gridTemplateColumns: `repeat(${gridCols}, 1fr)`, gap: gridGap }}>
                 {isRefreshing && filteredProducts.length > 0 && (
                   Array.from({ length: Math.min(8, filteredProducts.length) }).map((_, i) => (
                     <SkeletonCard key={`skeleton-all-${i}`} height={260} />
@@ -781,13 +839,14 @@ const HomePage = () => {
                     </div>
                     <div className="productInfo">
                       <h3 className="productName">{product.name || 'Product Name'}</h3>
-                        {(product.soldCount != null || product.peakOrderTimes) && (
-                          <div style={{ fontSize: '12px', color: '#777', marginTop: '2px' }}>
-                            {product.soldCount != null
-                              ? `Sold: ${product.soldCount}`
-                              : `Peak: ${formatPeakTimes(product.peakOrderTimes)}`}
-                          </div>
-                        )}
+                      {Number.isFinite(product.soldCount) && (
+                        <div style={{ fontSize: '12px', color: '#777', marginTop: 2 }}>Sold: {product.soldCount}</div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                        <span style={{ fontSize: 12, color: product.availability === 'Out of Stock' ? '#9e9e9e' : '#2e7d32', background: '#f2f2f2', borderRadius: 10, padding: '2px 8px' }}>
+                          {product.availability === 'Out of Stock' ? 'Out of Stock' : 'Available'}
+                        </span>
+                      </div>
                       <div className="productPriceRow">
                         <p className="productPrice">₱{product.price || '0'}</p>
                         <button 
